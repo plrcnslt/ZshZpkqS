@@ -149,6 +149,9 @@ const MenuPage = () => {
     };
   }, []);
 
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuItemsReady, setMenuItemsReady] = useState(false);
+
   useEffect(() => {
     if (!cartReady || !menuItemsReady || (!durableCartId && Object.keys(cart).length === 0)) return;
 
@@ -176,9 +179,6 @@ const MenuPage = () => {
     { id: "beverages", name: "Beverages", icon: Wine },
     { id: "special", name: "Special Offers", icon: Crown },
   ];
-
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [menuItemsReady, setMenuItemsReady] = useState(false);
 
   useEffect(() => {
     supabase
