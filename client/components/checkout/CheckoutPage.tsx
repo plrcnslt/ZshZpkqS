@@ -215,7 +215,31 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
     setTipPercentage(percentage);
   };
 
-  const startOnlinePayment = async ({ id, orderNumber }: { id: string; orderNumber: string }) => {
+  const openPaymentWindow = () => {
+    if (window.self === window.top) return null;
+
+    const paymentWindow = window.open("about:blank", "flutterwave-payment", "popup,width=480,height=760");
+    if (!paymentWindow) {
+      throw new Error("Please allow pop-ups to continue to secure payment.");
+    }
+
+    paymentWindow.document.title = "Opening secure payment";
+    paymentWindow.document.body.innerHTML = `
+      <main style="display:grid;place-items:center;min-height:100vh;background:#0f172a;color:white;font-family:system-ui,sans-serif;text-align:center;padding:24px">
+        <div>
+          <div style="font-size:48px;color:#f4c430">⌛</div>
+          <h1 style="font-size:22px">Opening secure payment</h1>
+          <p style="color:#cbd5e1">Connecting you to Flutterwave. Please keep this window open.</p>
+        </div>
+      </main>
+    `;
+    return paymentWindow;
+  };
+
+  const startOnlinePayment = async (
+    { id, orderNumber }: { id: string; orderNumber: string },
+    paymentWindow: Window | null,
+  ) => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("Please sign in before paying.");
 
@@ -252,6 +276,14 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       usePoints,
     });
     setIsRedirecting(true);
+
+    if (paymentWindow) {
+      if (paymentWindow.closed) throw new Error("The secure payment window was closed before it opened.");
+      paymentWindow.location.replace(paymentSession.paymentUrl);
+      paymentWindow.focus();
+      return;
+    }
+
     await new Promise((resolve) => window.setTimeout(resolve, 50));
     window.location.replace(paymentSession.paymentUrl);
   };
@@ -261,10 +293,13 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
     setIsProcessing(true);
     setIsRedirecting(isOnlinePayment);
     setCheckoutError("");
+    let paymentWindow: Window | null = null;
 
     try {
+      paymentWindow = isOnlinePayment ? openPaymentWindow() : null;
+
       if (pendingPaymentOrder) {
-        await startOnlinePayment(pendingPaymentOrder);
+        await startOnlinePayment(pendingPaymentOrder, paymentWindow);
         return;
       }
 
@@ -324,7 +359,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       const paymentOrder = { id: order.id, orderNumber: order.order_number };
       if (paymentMethod === "card" || paymentMethod === "mobile-money") {
         setPendingPaymentOrder(paymentOrder);
-        await startOnlinePayment(paymentOrder);
+        await startOnlinePayment(paymentOrder, paymentWindow);
         return;
       }
 
@@ -332,6 +367,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       setOrderConfirmed(true);
       setStep("confirmation");
     } catch (error) {
+      paymentWindow?.close();
       console.error("Unable to process menu order", error);
       if (isMountedRef.current) {
         setIsProcessing(false);
