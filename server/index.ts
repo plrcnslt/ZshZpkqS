@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { handleDemo } from "./routes/demo";
 import {
+  cancelFlutterwavePayment,
   createFlutterwaveHostedSession,
   handleFlutterwaveWebhook,
   verifyFlutterwavePayment,
@@ -22,6 +23,7 @@ export function createServer() {
 
   app.get("/api/demo", handleDemo);
   app.post("/api/payments/flutterwave/hosted-session", createFlutterwaveHostedSession);
+  app.post("/api/payments/flutterwave/cancel", cancelFlutterwavePayment);
   app.post("/api/payments/flutterwave/verify", verifyFlutterwavePayment);
   app.post("/api/payments/flutterwave/webhook", handleFlutterwaveWebhook);
 

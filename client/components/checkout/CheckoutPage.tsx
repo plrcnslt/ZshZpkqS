@@ -48,6 +48,7 @@ import {
   type ResumableMenuOrder,
 } from "../../lib/flutterwave";
 import { supabase } from "../../lib/supabase";
+import { convertActiveMenuCart } from "../../lib/menuCart";
 
 interface MenuItem {
   id: string;
@@ -65,6 +66,7 @@ interface CheckoutPageProps {
   onUpdateCart: (itemId: string, quantity: number) => void;
   onRemoveFromCart: (itemId: string) => void;
   resumableOrder?: ResumableMenuOrder;
+  durableCartId?: string | null;
 }
 
 const CheckoutPage: React.FC<CheckoutPageProps> = ({
@@ -74,6 +76,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
   onUpdateCart,
   onRemoveFromCart,
   resumableOrder,
+  durableCartId,
 }) => {
   const [step, setStep] = useState<
     "cart" | "details" | "payment" | "confirmation"
@@ -304,6 +307,8 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       );
 
       if (itemsError) throw new Error("We could not save the order items. Please try again.");
+
+      await convertActiveMenuCart(durableCartId || null, order.id);
 
       const paymentOrder = { id: order.id, orderNumber: order.order_number };
       if (paymentMethod === "card" || paymentMethod === "mobile-money") {

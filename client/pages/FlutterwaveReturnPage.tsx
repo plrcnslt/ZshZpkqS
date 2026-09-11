@@ -45,6 +45,21 @@ const FlutterwaveReturnPage = () => {
       const status = searchParams.get("status");
 
       if (status !== "successful") {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (txRef && session?.access_token) {
+          fetch("/api/payments/flutterwave/cancel", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              txRef,
+              status: status === "cancelled" ? "cancelled" : "failed",
+            }),
+          }).catch((error) => console.error("Unable to record payment cancellation", error));
+        }
+
         if (active) {
           setResult({
             status: status === "cancelled" ? "cancelled" : "error",

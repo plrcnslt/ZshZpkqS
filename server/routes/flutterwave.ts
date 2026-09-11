@@ -113,6 +113,41 @@ const getOrderByPaymentReference = async (paymentReference: string) => {
   return order;
 };
 
+const updatePaymentAttemptAsService = async (txRef: string, values: Record<string, unknown>) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/menu_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseServiceRoleKey}`,
+        "content-type": "application/json",
+        prefer: "return=minimal",
+      },
+      body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
+    },
+  );
+
+  if (!response.ok) throw new Error("Unable to update payment attempt");
+};
+
+const createPaymentAttemptAsService = async (values: Record<string, unknown>) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/menu_payment_attempts`, {
+    method: "POST",
+    headers: {
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${supabaseServiceRoleKey}`,
+      "content-type": "application/json",
+      prefer: "return=minimal",
+    },
+    body: JSON.stringify(values),
+  });
+
+  if (!response.ok) throw new Error("Unable to create payment attempt");
+};
+
 const updateOrderAsService = async (orderId: string, values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
   const response = await fetch(
@@ -185,11 +220,18 @@ const confirmPayment = async (
     payment_reference: transactionReference,
     flutterwave_transaction_id: String(transaction.id),
   });
+  await updatePaymentAttemptAsService(transactionReference, {
+    transaction_id: String(transaction.id),
+    status: "completed",
+    completed_at: new Date().toISOString(),
+  });
 
   return { order, paymentStatus: "paid" as const };
 };
 
 export const createFlutterwaveHostedSession: RequestHandler = async (req, res) => {
+  let txRef: string | undefined;
+
   try {
     const { orderId } = req.body as { orderId?: string };
     if (!orderId) return res.status(400).json({ error: "Order ID is required" });
@@ -206,7 +248,15 @@ export const createFlutterwaveHostedSession: RequestHandler = async (req, res) =
       return res.status(400).json({ error: "Order total is invalid" });
     }
 
-    const txRef = `sheraton-${order.order_number}-${crypto.randomUUID()}`;
+    txRef = `sheraton-${order.order_number}-${crypto.randomUUID()}`;
+    await createPaymentAttemptAsService({
+      order_id: order.id,
+      tx_ref: txRef,
+      amount,
+      currency,
+      status: "initiated",
+    });
+
     const paymentOptions = getPaymentOptions(order.payment_method, currency);
     const returnUrl = getFlutterwaveReturnUrl();
     const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
@@ -241,6 +291,10 @@ export const createFlutterwaveHostedSession: RequestHandler = async (req, res) =
       throw new Error("Unable to create secure payment page");
     }
 
+    await updatePaymentAttemptAsService(txRef, {
+      status: "redirected",
+      payment_url: payload.data.link,
+    });
     await updateOrderAsService(order.id, {
       payment_reference: txRef,
       payment_status: "pending",
@@ -252,9 +306,44 @@ export const createFlutterwaveHostedSession: RequestHandler = async (req, res) =
       orderId: order.id,
     });
   } catch (error) {
+    if (txRef) {
+      await updatePaymentAttemptAsService(txRef, {
+        status: "failed",
+        failure_reason: error instanceof Error ? error.message : "Unable to prepare payment",
+      }).catch((attemptError) => console.error("Unable to record failed payment attempt", attemptError));
+    }
     console.error("Flutterwave hosted session error", error);
     return res.status(400).json({
       error: error instanceof Error ? error.message : "Unable to prepare payment",
+    });
+  }
+};
+
+export const cancelFlutterwavePayment: RequestHandler = async (req, res) => {
+  try {
+    const { txRef, status } = req.body as {
+      txRef?: string;
+      status?: "cancelled" | "failed";
+    };
+    if (!txRef) return res.status(400).json({ error: "Payment reference is required" });
+    if (status !== "cancelled" && status !== "failed") {
+      return res.status(400).json({ error: "Payment outcome is invalid" });
+    }
+
+    const order = await getOrderByPaymentReference(txRef);
+    await getAuthenticatedOrder(order.id, req.headers.authorization);
+    await updatePaymentAttemptAsService(txRef, {
+      status,
+      ...(status === "cancelled"
+        ? { cancelled_at: new Date().toISOString() }
+        : { failure_reason: "Flutterwave returned an unsuccessful payment status" }),
+    });
+    await updateOrderAsService(order.id, { payment_status: status });
+    return res.json({ orderId: order.id, paymentStatus: status });
+  } catch (error) {
+    console.error("Flutterwave payment cancellation error", error);
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "Unable to record payment cancellation",
     });
   }
 };
