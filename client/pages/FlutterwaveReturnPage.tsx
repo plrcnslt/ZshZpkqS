@@ -11,10 +11,30 @@ type PaymentResult =
   | { status: "cancelled"; message: string }
   | { status: "error"; message: string };
 
+const getInitialPaymentResult = (searchParams: URLSearchParams): PaymentResult => {
+  const status = searchParams.get("status");
+
+  if (status === "cancelled") {
+    return {
+      status: "cancelled",
+      message: "The payment was cancelled. Your order is still saved and ready to try again.",
+    };
+  }
+
+  if (status && status !== "successful") {
+    return {
+      status: "error",
+      message: "Flutterwave did not return a completed payment. Your order is still saved so you can try again.",
+    };
+  }
+
+  return { status: "loading" };
+};
+
 const FlutterwaveReturnPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [result, setResult] = useState<PaymentResult>({ status: "loading" });
+  const [result, setResult] = useState<PaymentResult>(() => getInitialPaymentResult(searchParams));
 
   useEffect(() => {
     let active = true;
