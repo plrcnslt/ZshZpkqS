@@ -5,6 +5,7 @@ import CheckoutPage from "../components/checkout/CheckoutPage";
 import { menuItemFromDatabaseRow, MenuItem } from "../lib/menuData";
 import { supabase } from "../lib/supabase";
 import { getPendingCheckout, type ResumableMenuOrder } from "../lib/flutterwave";
+import { loadActiveMenuCart, syncActiveMenuCart } from "../lib/menuCart";
 import {
   Card,
   CardContent,
@@ -67,6 +68,8 @@ const MenuPage = () => {
   const [activeTab, setActiveTab] = useState("food");
   const [showCheckoutPage, setShowCheckoutPage] = useState(false);
   const [resumableOrder, setResumableOrder] = useState<ResumableMenuOrder | undefined>();
+  const [durableCartId, setDurableCartId] = useState<string | null>(null);
+  const [cartReady, setCartReady] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -75,9 +78,21 @@ const MenuPage = () => {
 
   useEffect(() => {
     const pendingCheckout = getPendingCheckout();
-    if (!pendingCheckout) return;
-    setCart(pendingCheckout.cart);
-    setShowCheckoutPage(true);
+    if (pendingCheckout) {
+      setCart(pendingCheckout.cart);
+      setShowCheckoutPage(true);
+      setCartReady(true);
+      return;
+    }
+
+    loadActiveMenuCart()
+      .then((savedCart) => {
+        if (!savedCart) return;
+        setDurableCartId(savedCart.id);
+        setCart(Object.fromEntries(savedCart.items.map((item) => [item.menu_item_id, Number(item.quantity)])));
+      })
+      .catch((error) => console.error("Unable to load saved menu cart", error))
+      .finally(() => setCartReady(true));
   }, []);
 
   useEffect(() => {
@@ -94,7 +109,7 @@ const MenuPage = () => {
         .select("id, order_number, order_type, payment_method, tip_amount, points_discount")
         .eq("user_id", user.id)
         .eq("status", "pending")
-        .eq("payment_status", "pending")
+        .in("payment_status", ["pending", "cancelled", "failed"])
         .in("payment_method", ["card", "mobile-money"])
         .order("created_at", { ascending: false })
         .limit(1)
@@ -134,6 +149,28 @@ const MenuPage = () => {
     };
   }, []);
 
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuItemsReady, setMenuItemsReady] = useState(false);
+
+  useEffect(() => {
+    if (!cartReady || !menuItemsReady || (!durableCartId && Object.keys(cart).length === 0)) return;
+
+    const timeout = window.setTimeout(() => {
+      const items = Object.entries(cart)
+        .map(([menuItemId, quantity]) => {
+          const item = menuItems.find((menuItem) => menuItem.id === menuItemId);
+          return item ? { menuItemId, quantity, unitPrice: item.price } : null;
+        })
+        .filter((item): item is { menuItemId: string; quantity: number; unitPrice: number } => Boolean(item));
+
+      syncActiveMenuCart(durableCartId, items)
+        .then((cartId) => setDurableCartId(cartId))
+        .catch((error) => console.error("Unable to save menu cart", error));
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [cart, cartReady, durableCartId, menuItems, menuItemsReady]);
+
   const categories = [
     { id: "all", name: "All Items", icon: Utensils },
     { id: "appetizers", name: "Appetizers", icon: Coffee },
@@ -143,8 +180,6 @@ const MenuPage = () => {
     { id: "special", name: "Special Offers", icon: Crown },
   ];
 
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-
   useEffect(() => {
     supabase
       .from("menu_items")
@@ -152,10 +187,9 @@ const MenuPage = () => {
       .eq("is_published", true)
       .order("created_at", { ascending: true })
       .then(({ data }) => {
-        if (!data) return;
-        setMenuItems(data.map(menuItemFromDatabaseRow));
-      });
-
+        if (data) setMenuItems(data.map(menuItemFromDatabaseRow));
+      })
+      .finally(() => setMenuItemsReady(true));
   }, []);
 
   const filteredItems = menuItems.filter((item) => {
@@ -283,6 +317,7 @@ const MenuPage = () => {
         onUpdateCart={updateCart}
         onRemoveFromCart={removeFromCartCompletely}
         resumableOrder={resumableOrder}
+        durableCartId={durableCartId}
       />
     );
   }

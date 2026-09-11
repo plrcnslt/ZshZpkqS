@@ -11,10 +11,30 @@ type PaymentResult =
   | { status: "cancelled"; message: string }
   | { status: "error"; message: string };
 
+const getInitialPaymentResult = (searchParams: URLSearchParams): PaymentResult => {
+  const status = searchParams.get("status");
+
+  if (status === "cancelled") {
+    return {
+      status: "cancelled",
+      message: "The payment was cancelled. Your order is still saved and ready to try again.",
+    };
+  }
+
+  if (status && status !== "successful") {
+    return {
+      status: "error",
+      message: "Flutterwave did not return a completed payment. Your order is still saved so you can try again.",
+    };
+  }
+
+  return { status: "loading" };
+};
+
 const FlutterwaveReturnPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [result, setResult] = useState<PaymentResult>({ status: "loading" });
+  const [result, setResult] = useState<PaymentResult>(() => getInitialPaymentResult(searchParams));
 
   useEffect(() => {
     let active = true;
@@ -25,6 +45,21 @@ const FlutterwaveReturnPage = () => {
       const status = searchParams.get("status");
 
       if (status !== "successful") {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (txRef && session?.access_token) {
+          fetch("/api/payments/flutterwave/cancel", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              txRef,
+              status: status === "cancelled" ? "cancelled" : "failed",
+            }),
+          }).catch((error) => console.error("Unable to record payment cancellation", error));
+        }
+
         if (active) {
           setResult({
             status: status === "cancelled" ? "cancelled" : "error",

@@ -48,6 +48,7 @@ import {
   type ResumableMenuOrder,
 } from "../../lib/flutterwave";
 import { supabase } from "../../lib/supabase";
+import { convertActiveMenuCart } from "../../lib/menuCart";
 
 interface MenuItem {
   id: string;
@@ -65,6 +66,7 @@ interface CheckoutPageProps {
   onUpdateCart: (itemId: string, quantity: number) => void;
   onRemoveFromCart: (itemId: string) => void;
   resumableOrder?: ResumableMenuOrder;
+  durableCartId?: string | null;
 }
 
 const CheckoutPage: React.FC<CheckoutPageProps> = ({
@@ -74,6 +76,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
   onUpdateCart,
   onRemoveFromCart,
   resumableOrder,
+  durableCartId,
 }) => {
   const [step, setStep] = useState<
     "cart" | "details" | "payment" | "confirmation"
@@ -212,18 +215,51 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
     setTipPercentage(percentage);
   };
 
-  const startOnlinePayment = async ({ id, orderNumber }: { id: string; orderNumber: string }) => {
+  const openPaymentWindow = () => {
+    if (window.self === window.top) return null;
+
+    const paymentWindow = window.open("about:blank", "flutterwave-payment", "popup,width=480,height=760");
+    if (!paymentWindow) {
+      throw new Error("Please allow pop-ups to continue to secure payment.");
+    }
+
+    paymentWindow.document.title = "Opening secure payment";
+    paymentWindow.document.body.innerHTML = `
+      <main style="display:grid;place-items:center;min-height:100vh;background:#0f172a;color:white;font-family:system-ui,sans-serif;text-align:center;padding:24px">
+        <div>
+          <div style="font-size:48px;color:#f4c430">⌛</div>
+          <h1 style="font-size:22px">Opening secure payment</h1>
+          <p style="color:#cbd5e1">Connecting you to Flutterwave. Please keep this window open.</p>
+        </div>
+      </main>
+    `;
+    return paymentWindow;
+  };
+
+  const startOnlinePayment = async (
+    { id, orderNumber }: { id: string; orderNumber: string },
+    paymentWindow: Window | null,
+  ) => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("Please sign in before paying.");
 
-    const sessionResponse = await fetch("/api/payments/flutterwave/hosted-session", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ orderId: id }),
-    });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    let sessionResponse: Response;
+
+    try {
+      sessionResponse = await fetch("/api/payments/flutterwave/hosted-session", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ orderId: id }),
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeout);
+    }
     const paymentSession = (await sessionResponse.json()) as FlutterwaveHostedSession | { error?: string };
     if (!sessionResponse.ok || !("paymentUrl" in paymentSession)) {
       throw new Error(("error" in paymentSession && paymentSession.error) || "Unable to prepare secure checkout.");
@@ -240,17 +276,30 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       usePoints,
     });
     setIsRedirecting(true);
+
+    if (paymentWindow) {
+      if (paymentWindow.closed) throw new Error("The secure payment window was closed before it opened.");
+      paymentWindow.location.replace(paymentSession.paymentUrl);
+      paymentWindow.focus();
+      return;
+    }
+
     await new Promise((resolve) => window.setTimeout(resolve, 50));
     window.location.replace(paymentSession.paymentUrl);
   };
 
   const handlePlaceOrder = async () => {
+    const isOnlinePayment = paymentMethod === "card" || paymentMethod === "mobile-money";
     setIsProcessing(true);
+    setIsRedirecting(isOnlinePayment);
     setCheckoutError("");
+    let paymentWindow: Window | null = null;
 
     try {
+      paymentWindow = isOnlinePayment ? openPaymentWindow() : null;
+
       if (pendingPaymentOrder) {
-        await startOnlinePayment(pendingPaymentOrder);
+        await startOnlinePayment(pendingPaymentOrder, paymentWindow);
         return;
       }
 
@@ -305,10 +354,12 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
 
       if (itemsError) throw new Error("We could not save the order items. Please try again.");
 
+      await convertActiveMenuCart(durableCartId || null, order.id);
+
       const paymentOrder = { id: order.id, orderNumber: order.order_number };
       if (paymentMethod === "card" || paymentMethod === "mobile-money") {
         setPendingPaymentOrder(paymentOrder);
-        await startOnlinePayment(paymentOrder);
+        await startOnlinePayment(paymentOrder, paymentWindow);
         return;
       }
 
@@ -316,6 +367,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       setOrderConfirmed(true);
       setStep("confirmation");
     } catch (error) {
+      paymentWindow?.close();
       console.error("Unable to process menu order", error);
       if (isMountedRef.current) {
         setIsProcessing(false);
@@ -357,12 +409,24 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
   };
 
   const renderRedirectingStep = () => (
-    <div className="flex min-h-[420px] flex-col items-center justify-center rounded-xl border bg-white px-6 text-center shadow-sm">
-      <div className="h-10 w-10 animate-spin rounded-full border-4 border-sheraton-gold/30 border-t-sheraton-gold" aria-hidden="true" />
-      <h2 className="mt-6 text-2xl font-semibold text-sheraton-navy">Opening secure payment</h2>
-      <p className="mt-2 max-w-md text-sm text-muted-foreground">
-        You’re being taken to Flutterwave’s secure checkout. Please keep this tab open while the payment page loads.
-      </p>
+    <div
+      className="fixed inset-0 z-[100] flex min-h-screen items-center justify-center bg-sheraton-navy px-6 text-center text-white"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="w-full max-w-md">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-sheraton-gold/40 bg-sheraton-gold/10">
+          <Shield className="h-8 w-8 text-sheraton-gold" aria-hidden="true" />
+        </div>
+        <h2 className="mt-7 text-2xl font-semibold">Opening secure payment</h2>
+        <p className="mt-3 text-sm leading-6 text-white/75">
+          We’re securely connecting you to Flutterwave. Please keep this window open while the payment page loads.
+        </p>
+        <div className="mx-auto mt-8 h-1.5 w-full overflow-hidden rounded-full bg-white/15" aria-hidden="true">
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-sheraton-gold" />
+        </div>
+        <p className="mt-4 text-xs text-white/55">Your order is safely saved.</p>
+      </div>
     </div>
   );
 
